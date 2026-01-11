@@ -1,0 +1,12 @@
+streamlit
+pandas
+requests
+beautifulsoup4
+numpy
+plotly
+openai
+google-generativeai
+umap-learn
+scikit-learn
+streamlit-agraph
+rank_bm25
