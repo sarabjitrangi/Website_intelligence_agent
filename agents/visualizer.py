@@ -87,6 +87,31 @@ class VisualizerAgent(BaseAgent):
             self.log(f"Model Discovery Error: {e}")
             return genai.GenerativeModel("models/gemini-pro")
 
+    def _generate_text(self, prompt):
+        """
+        Helper to generate text using the configured provider (OpenAI or Gemini).
+        """
+        if not self.client:
+            return None
+
+        try:
+            if self.provider == "openai":
+                resp = self.client.chat.completions.create(
+                    model="gpt-4o-mini",
+                    messages=[{"role": "user", "content": prompt}]
+                )
+                return resp.choices[0].message.content.strip().replace('"', '')
+            
+            elif self.provider == "gemini":
+                model = self._get_gemini_chat_model()
+                resp = model.generate_content(prompt)
+                return resp.text.strip().replace('"', '')
+                
+        except Exception as e:
+            self.log(f"Generation Error ({self.provider}): {e}")
+            return None
+        return None
+
     def cluster_and_label(self, df, n_clusters=5):
         try:
             from sklearn.cluster import KMeans
@@ -104,16 +129,10 @@ class VisualizerAgent(BaseAgent):
                 
                 try:
                     name = f"Cluster {i}"
-                    if self.provider == "openai":
-                        resp = self.client.chat.completions.create(
-                            model="gpt-4o-mini",
-                            messages=[{"role": "user", "content": prompt}]
-                        )
-                        name = resp.choices[0].message.content.strip().replace('"', '')
-                    elif self.provider == "gemini":
-                        model = self._get_gemini_chat_model()
-                        resp = model.generate_content(prompt)
-                        name = resp.text.strip().replace('"', '')
+                    generated_name = self._generate_text(prompt)
+                    if generated_name:
+                         name = generated_name
+                    
                     cluster_names[i] = name
                 except Exception as e:
                     self.log(f"Naming Error ({i}): {e}")
