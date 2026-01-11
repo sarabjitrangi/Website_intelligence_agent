@@ -14,7 +14,7 @@ except ImportError:
     HAS_AGRAPH = False
 
 # Page Config
-st.set_page_config(page_title="Antigravity Semantic Mapper", layout="wide")
+st.set_page_config(page_title="SR Semantic Mapper", layout="wide")
 
 # Initialize Agents
 if 'scraper_agent' not in st.session_state:
