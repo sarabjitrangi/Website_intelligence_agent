@@ -10,3 +10,7 @@ umap-learn
 scikit-learn
 streamlit-agraph
 rank_bm25
+googlesearch-python
+ddgs
+wordcloud
+matplotlib

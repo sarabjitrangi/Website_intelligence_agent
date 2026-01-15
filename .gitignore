@@ -40,3 +40,7 @@ brain/
 .vscode/
 .idea/
 .DS_Store
+
+# Test files
+test_search.py
+test_search_deep.py

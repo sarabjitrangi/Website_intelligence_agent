@@ -31,13 +31,19 @@ else:
         sig_map = inspect.signature(agent.create_semantic_map)
         sig_search = inspect.signature(agent.search)
         
+        # Check signature for chat
+        sig_chat = inspect.signature(agent.chat)
+        
         if ('dimensions' not in sig_map.parameters or 
             'show_links' not in sig_map.parameters or
             'show_clusters' not in sig_map.parameters or
             not hasattr(agent, 'set_config') or 
             not hasattr(agent, 'chat') or
+            'include_web' not in sig_chat.parameters or
             not hasattr(agent, 'hybrid_search') or
-            'max_score' not in sig_search.parameters):
+            'max_score' not in sig_search.parameters or
+            not hasattr(agent, 'compare_with_web') or
+            not hasattr(agent, 'generate_wordcloud')):
             
             st.session_state.visualizer_agent = VisualizerAgent()
     except Exception:
@@ -103,7 +109,7 @@ def main():
         st.sidebar.success(f"Saved: {uploaded_file.name}")
 
     # Main Area: Tabs
-    tab1, tab2, tab3, tab4 = st.tabs(["📊 Data Viewer", "🗺️ Semantic Map", "🔎 Semantic Search", "💬 Chat with Data"])
+    tab1, tab2, tab3, tab4, tab5 = st.tabs(["📊 Data Viewer", "🗺️ Semantic Map", "🔎 Semantic Search", "💬 Chat with Data", "🆚 Competitive Analysis"])
     
     data_dir = "data"
     if not os.path.exists(data_dir):
@@ -148,6 +154,7 @@ def main():
             with col_info:
                  show_links = st.checkbox("Show Network Links", value=False, help="Draw lines between pages that link to each other.")
                  show_clusters = st.checkbox("Cluster & Name Topics", value=False, help="Automatically group pages and name the topics using AI.")
+                 show_wordcloud = st.checkbox("Show Topic Word Cloud", value=False, help="Visualize most frequent terms in the dataset.")
             
             if generate:
                 # Load and Combine
@@ -180,7 +187,7 @@ def main():
                                 edges = [Edge(**e) for e in edges_data]
                                 
                                 config = Config(
-                                    width=750, height=750, 
+                                    width=None, height=950, 
                                     directed=True, 
                                     nodeHighlightBehavior=True, 
                                     highlightColor="#F7A7A6", 
@@ -207,7 +214,7 @@ def main():
                                 )
                                 
                                 # Capture return value (selected node) though we might not use it yet
-                                return_value = agraph(nodes=nodes, edges=edges, config=config, key="interactive_graph")
+                                return_value = agraph(nodes=nodes, edges=edges, config=config)
                     else:
                         with st.spinner(f"Embedding & Mapping {len(combined_df)} pages..."):
                             try:
@@ -238,6 +245,16 @@ def main():
                                         file_name="merged_embeddings.json",
                                         mime="application/json"
                                     )
+                                    
+                                    # Show Word Cloud
+                                    if show_wordcloud:
+                                        with st.spinner("Generating Word Cloud..."):
+                                            wc_fig = st.session_state.visualizer_agent.generate_wordcloud(combined_df)
+                                            if wc_fig:
+                                                st.subheader("☁️ Topic Word Cloud")
+                                                st.pyplot(wc_fig, use_container_width=True)
+                                            else:
+                                                st.warning("Could not generate word cloud (not enough text data).")
                             except Exception as e:
                                 st.error(f"Error: {e}")
 
@@ -319,6 +336,9 @@ def main():
             if "messages" not in st.session_state:
                 st.session_state.messages = []
                 
+            # Chat Controls
+            include_web = st.checkbox("🌐 Include Web Search Results", value=False, help="Agent will also search the web (Google/DuckDuckGo) to answer.")
+                
             # Display History
             for message in st.session_state.messages:
                 with st.chat_message(message["role"]):
@@ -349,7 +369,7 @@ def main():
                             context_df = pd.DataFrame()
                         else:
                             with st.spinner("Thinking..."):
-                                ret = st.session_state.visualizer_agent.chat(combined_df, prompt)
+                                ret = st.session_state.visualizer_agent.chat(combined_df, prompt, include_web=include_web)
                                 if isinstance(ret, tuple):
                                     response, context_df = ret
                                 else:
@@ -361,10 +381,10 @@ def main():
                         
                         # Show Context Tools if data exists
                         if not context_df.empty:
-                            with st.expander("📚 Sources & Tools"):
+                            with st.expander("📚 Sources & Tools", expanded=True):
                                 st.dataframe(context_df[['score', 'title', 'url']])
                                 
-                                c1, c2 = st.columns(2)
+                                c1, c2, c3 = st.columns(3)
                                 with c1:
                                     st.download_button(
                                         "📥 Download Context",
@@ -385,6 +405,121 @@ def main():
                                         )
                                         if fig:
                                             st.plotly_chart(fig, use_container_width=True)
+
+                                with c3:
+                                    if st.button("☁️ Context Word Cloud"):
+                                         wc = st.session_state.visualizer_agent.generate_wordcloud(context_df)
+                                         if wc:
+                                             st.pyplot(wc, use_container_width=True)
+                                         else:
+                                             st.warning("Not enough text.")
+
+                                st.divider()
+                                if st.button("✍️ Draft Article from this Answer"):
+                                    with st.spinner("Drafting..."):
+                                        # Use the answer as the gap analysis/basis
+                                        draft = st.session_state.visualizer_agent.draft_content(prompt, response, context_df)
+                                        st.markdown("### 📝 Draft")
+                                        st.markdown(draft)
+
+    # --- Tab 5: Competitive Analysis ---
+    with tab5:
+        st.header("🆚 Competitive Analysis")
+        st.write("Compare your content with top-ranking search results.")
+        
+        if not files:
+            st.info("No data found.")
+        else:
+            comp_files = st.multiselect("Select Dataset(s)", files, default=[files[0]], key='comp_select')
+            query = st.text_input("Enter Topic/Keyword to Compare")
+            
+            if st.button("Compare with Web") and query and comp_files:
+                combined_df = pd.DataFrame()
+                for f in comp_files:
+                    path = os.path.join(data_dir, f)
+                    df_temp = st.session_state.visualizer_agent.load_data(path)
+                    combined_df = pd.concat([combined_df, df_temp], ignore_index=True)
+                
+                if 'embedding' not in combined_df.columns:
+                     st.warning("⚠️ Selected datasets do not have embeddings. Please generate a map first.")
+                else:
+                    with st.spinner("Searching web & analyzing gaps..."):
+                        try:
+                            # Try calling the function
+                            ret = st.session_state.visualizer_agent.compare_with_web(combined_df, query)
+                            if len(ret) == 4:
+                                analysis, local_res, web_res, source_name = ret
+                            else:
+                                raise ValueError("Stale agent detected")
+                        except (ValueError, Exception):
+                            # Reload agent
+                            st.session_state.visualizer_agent = VisualizerAgent()
+                            if 'api_key' in locals() and api_key:
+                                st.session_state.visualizer_agent.set_config(provider.lower(), api_key)
+                            analysis, local_res, web_res, source_name = st.session_state.visualizer_agent.compare_with_web(combined_df, query)
+
+                        # Store in session state
+                        st.session_state['comp_analysis'] = analysis
+                        st.session_state['comp_local_res'] = local_res
+                        st.session_state['comp_web_res'] = web_res
+                        st.session_state['comp_source'] = source_name
+                        st.session_state['comp_query'] = query
+
+            # Display Results (Persistent)
+            if 'comp_analysis' in st.session_state:
+                analysis = st.session_state['comp_analysis']
+                local_res = st.session_state['comp_local_res']
+                web_res = st.session_state['comp_web_res']
+                source_name = st.session_state['comp_source']
+                query_val = st.session_state['comp_query']
+
+                if source_name == "DuckDuckGo":
+                    st.warning("⚠️ Google Search is not showing results. Now showing DuckDuckGo results.")
+                elif source_name == "Google":
+                    st.info(f"✅ Showing results from {source_name}")
+                
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    with st.expander("🏠 Your Content (Top 5 Matches)", expanded=True):
+                        if local_res.empty:
+                            st.write("No relevant local content found.")
+                        else:
+                            for _, row in local_res.iterrows():
+                                st.markdown(f"**[{row['title']}]({row['url']})**")
+                                st.caption(f"Score: {row['score']:.2f}")
+                                st.write(row['content'][:150] + "...")
+                                st.divider()
+
+                with col2:
+                    with st.expander(f"🌍 {source_name} Search Results (Top 5)", expanded=True):
+                        if not web_res:
+                            st.write(f"No {source_name} results found.")
+                        else:
+                            for r in web_res:
+                                st.markdown(f"**[{r['title']}]({r['href']})**")
+                                st.write(r['body'][:150] + "...")
+                                st.divider()
+                
+                st.subheader("💡 AI Gap Analysis")
+                st.markdown(analysis)
+                
+                st.divider()
+                st.subheader("✍️ Generative Action")
+                
+                if st.button("✨ Draft Content to Fill Gaps"):
+                    with st.spinner("Drafting content..."):
+                        draft = st.session_state.visualizer_agent.draft_content(query_val, analysis, local_res)
+                        
+                        st.markdown("### 📝 Generated Draft")
+                        st.markdown(draft)
+                        
+                        st.download_button(
+                            "📥 Download Draft",
+                            data=draft,
+                            file_name=f"draft_{query_val.replace(' ', '_')}.md",
+                            mime="text/markdown"
+                        )
 
 if __name__ == "__main__":
     main()

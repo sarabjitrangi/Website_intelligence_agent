@@ -6,6 +6,12 @@ import os
 import plotly.express as px
 from openai import OpenAI
 import google.generativeai as genai
+import googlesearch
+import googlesearch
+from ddgs import DDGS
+from wordcloud import WordCloud
+from wordcloud import WordCloud
+import matplotlib.pyplot as plt
 
 class VisualizerAgent(BaseAgent):
     def __init__(self, provider="openai", api_key=None):
@@ -247,7 +253,8 @@ class VisualizerAgent(BaseAgent):
                     color=color_col,
                     hover_data=['title', 'url'],
                     title=title,
-                    template='plotly_dark'
+                    template='plotly_dark',
+                    height=900
                 )
             else:
                 fig = px.scatter(
@@ -255,7 +262,8 @@ class VisualizerAgent(BaseAgent):
                     color=color_col,
                     hover_data=['title', 'url'],
                     title=title,
-                    template='plotly_dark'
+                    template='plotly_dark',
+                    height=900
                 )
             
             # Draw Links Overlay
@@ -419,7 +427,7 @@ class VisualizerAgent(BaseAgent):
                 "label": row['title'][:30] + "...",
                 "title": row['title'], # Tooltip
                 "group": group,
-                "val": 10 # Size
+                "val": 1 # Size
             })
             
         # 2. Create Edges from Internal Links
@@ -440,27 +448,44 @@ class VisualizerAgent(BaseAgent):
         
         return nodes, edges
         
-    def chat(self, df, query):
+    def chat(self, df, query, include_web=False):
         """
         RAG Chat: Retrieval Augmented Generation.
-        1. Search for relevant context.
+        1. Search for relevant context (Local + Optional Web).
         2. Ask LLM to answer.
         """
         if not self.api_key:
-             return "I need an API Key to answer questions."
+             return "I need an API Key to answer questions.", pd.DataFrame()
         
         # 1. Retrieve Context
+        # Local
         results = self.search(df, query, top_n=5)
-        if results.empty:
-            return "I couldn't find any relevant information in the loaded data.", pd.DataFrame()
+        
+        local_context_str = ""
+        if not results.empty:
+            for idx, row in results.iterrows():
+                local_context_str += f"\n--- Local Source: {row['url']} ---\n{row['content'][:1500]}\n"
+        
+        # Web
+        web_context_str = ""
+        source_name = "None"
+        if include_web:
+             try:
+                 web_results, source_name = self.fetch_web_results(query, max_results=3)
+                 if web_results:
+                     for r in web_results:
+                         web_context_str += f"\n--- Web Source ({source_name}): {r['href']} ---\nTitle: {r['title']}\n{r['body']}\n"
+             except Exception as e:
+                 self.log(f"Chat Web Search Error: {e}")
+
+        if not local_context_str and not web_context_str:
+            return "I couldn't find any relevant information in the loaded data or on the web.", pd.DataFrame()
             
-        context_str = ""
-        for idx, row in results.iterrows():
-            context_str += f"\n--- Source: {row['url']} ---\n{row['content'][:1500]}\n"
+        full_context = f"LOCAL DATA:\n{local_context_str}\n\nWEB SEARCH RESULTS ({source_name}):\n{web_context_str}"
             
         # 2. Generate Answer
-        system_prompt = "You are a helpful assistant. Answer the user's question based ONLY on the provided context."
-        user_prompt = f"Context:\n{context_str}\n\nQuestion: {query}\nAnswer:"
+        system_prompt = "You are a helpful assistant. Answer the user's question based ONLY on the provided context. If using web results, cite them."
+        user_prompt = f"Context:\n{full_context}\n\nQuestion: {query}\nAnswer:"
         
         try:
             response_text = ""
@@ -485,3 +510,146 @@ class VisualizerAgent(BaseAgent):
                 
         except Exception as e:
             return f"Error generating answer: {str(e)}", pd.DataFrame()
+
+    def fetch_web_results(self, query, max_results=5):
+        """
+        Fetches top web search results using Google Search with DuckDuckGo fallback.
+        Returns: (List of dicts {title, href, body}, source_name)
+        """
+        results = []
+        source = "Google"
+        
+        # 1. Try Google Search
+        try:
+            # google search often blocks IPs, so we treat empty results as potential block too if query is simple
+            for r in googlesearch.search(query, num_results=max_results, advanced=True):
+                results.append({
+                    "title": r.title,
+                    "href": r.url,
+                    "body": r.description
+                })
+        except Exception as e:
+            self.log(f"Google Search Error: {e}")
+            results = []
+
+        # 2. Fallback to DuckDuckGo if Google failed or returned nothing
+        if not results:
+            try:
+                self.log("Falling back to DuckDuckGo...")
+                source = "DuckDuckGo"
+                # Sometimes context manager fails in some envs? 
+                # Let's try direct instantiation
+                ddgs = DDGS()
+                ddg_results = list(ddgs.text(query, max_results=max_results))
+                self.log(f"DDG found {len(ddg_results)} results")
+                if ddg_results:
+                    for r in ddg_results:
+                        results.append({
+                            "title": r['title'],
+                            "href": r['href'],
+                            "body": r['body']
+                        })
+                else:
+                    self.log("DDG returned empty list")
+            except Exception as e:
+                self.log(f"DuckDuckGo Error: {e}")
+                
+        return results, source
+
+    def compare_with_web(self, df, query):
+        """
+        Compares local data with web search results for a given query.
+        Returns: (analysis_text, local_results_df, web_results_list, source_name)
+        """
+        # 1. Get Local Results
+        local_results = self.search(df, query, top_n=5)
+        
+        # 2. Get Web Results
+        web_results, source_name = self.fetch_web_results(query, max_results=5)
+        
+        if local_results.empty and not web_results:
+            return "No data found locally or on the web to compare.", local_results, web_results, source_name
+
+        # 3. Analyze Differences
+        local_summary = ""
+        for _, row in local_results.iterrows():
+            local_summary += f"- [{row['title']}]({row['url']}): {row['content'][:200]}...\n"
+            
+        web_summary = ""
+        for r in web_results:
+            web_summary += f"- [{r['title']}]({r['href']}): {r['body']}...\n"
+            
+        prompt = f"""
+        Compare the following two sets of information regarding the query: "{query}".
+        
+        Set A (Local Data):
+        {local_summary}
+        
+        Set B (Top {source_name} Search Results):
+        {web_summary}
+        
+        Provide a Competitive Analysis:
+        1. Content Gaps: What is the web covering that we are missing?
+        2. Unique Value: What do we cover that the web results don't?
+        3. Ranking Opportunities: Suggestions to improve our content to rank better.
+        """
+        
+        analysis = self._generate_text(prompt)
+        if not analysis:
+            analysis = "Error generating analysis."
+            
+        return analysis, local_results, web_results, source_name
+
+    def generate_wordcloud(self, df):
+        """
+        Generates a WordCloud object from the DataFrame content.
+        """
+        if df.empty or 'content' not in df.columns:
+            return None
+            
+        text = " ".join(df['content'].astype(str).tolist())
+        if not text:
+            return None
+            
+        wordcloud = WordCloud(width=800, height=400, background_color='black', colormap='viridis').generate(text)
+        
+        # Create a figure
+        fig, ax = plt.subplots(figsize=(10, 5))
+        ax.imshow(wordcloud, interpolation='bilinear')
+        ax.axis('off')
+        plt.close(fig) # Close global figure to prevent leak
+        return fig
+
+    def draft_content(self, topic, gap_analysis, local_context=None):
+        """
+        Drafts a blog post/article based on the gap analysis.
+        """
+        context_str = ""
+        if local_context is not None and not local_context.empty:
+             for _, row in local_context.iterrows():
+                 context_str += f"- {row['content'][:300]}...\n"
+                 
+        prompt = f"""
+        You are an expert Content Writer.
+        Task: Draft a high-quality blog post about "{topic}" to fill the content gaps identified below.
+        
+        Gap Analysis:
+        {gap_analysis}
+        
+        Our Existing Content Context (Avoid repeating this, but ensure consistency):
+        {context_str}
+        
+        Format:
+        - Catchy Title
+        - Introduction (Hook)
+        - Key Sections (addressing the gaps)
+        - Conclusion
+        - Call to Action
+        """
+        
+        result = self._generate_text(prompt)
+        if not result:
+            self.log("Draft Generation Failed: Empty result")
+            return "Error: Could not generate draft. Please check the logs."
+            
+        return result
