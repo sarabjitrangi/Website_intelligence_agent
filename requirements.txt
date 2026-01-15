@@ -10,7 +10,9 @@ umap-learn
 scikit-learn
 streamlit-agraph
 rank_bm25
-googlesearch-python
+googlesearch-python>=1.3.0
 ddgs
 wordcloud
 matplotlib
+
+# Force rebuild 2026-01-15
